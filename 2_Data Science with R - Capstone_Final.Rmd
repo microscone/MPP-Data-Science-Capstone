@@ -1,0 +1,464 @@
+---
+title: "MPP Data Science with R - Capstone"
+author: "Shane Cone @Microscone"
+date: "11/1/2019"
+output: html_document
+---
+
+For this Capstone, I will be using R. This is an R Markdown file, where all of my work was performed.
+
+
+#Exploratory Data Analysis (EDA)
+
+step 0 - install and load libraries!
+```{r}
+#install.packages("repr")
+#install.packages("caret")
+library(ggplot2)
+library(repr)
+library(tidyverse)
+library(caret)
+
+```
+
+First, we are simply going to load the data, and start to examine the training dataset.
+```{r}
+Training_values <- read.csv("train_values_OL27nta.csv")
+Train_labels <- read.csv("train_labels_DPetPH2.csv")
+Test_values <- read.csv("test_values_kWyIOM9.csv")
+
+```
+
+In this particular dataset, all factors are already coded as such so no transformation is needed. We wil create a fac_col variable just to have the factor columns named, though. 
+```{r}
+#we see that county code mostly only has one data point per county code, so we are removing that variable
+Training_values <- select(Training_values, -county_code)
+Test_values <- select(Test_values, -county_code)
+
+fac_col = c('state', 'rucc','urban_influence', 'economic_typology') 
+
+#add train_labels to training values
+Training_values$gross_rent <- Train_labels$gross_rent
+#at this point, we can get rid of our train_labels
+rm(Train_labels)
+
+```
+
+#EDA and Challenge 1
+
+```{r}
+# The first assignment asks us some questions about the data.
+
+# question 1: What is the minimum gross rent?
+Training_values %>% 
+  arrange(gross_rent) %>% 
+  select(gross_rent) %>% 
+  head(5)
+
+# question 2: What is the maximum gross rent?
+Training_values %>% 
+  arrange(desc(gross_rent)) %>% 
+  select(gross_rent) %>% 
+  head(5)
+
+# question 3: What is the mean gross rent?
+Training_values %>% 
+  summarize('Mean gross rent' = mean(gross_rent, na.rm = T))
+
+# question 4: What is the median gross rent?
+Training_values %>% 
+  summarize('Median gross rent' = median(gross_rent, na.rm = T))
+
+# question 5: What is the standard deviation of gross rent?
+Training_values %>% 
+  summarize('SD of gross rent' = round(sd(gross_rent, na.rm = T), 0))
+
+# question 6: what does the histogram of gross_rent look like?
+ggplot(Training_values) +
+geom_histogram(aes(x = gross_rent))
+
+# question 7: which variable has the strongest positive correlation with gross rent?
+library(corrplot)
+num_cols <- names(Training_values[c(2:15, 19:44)])
+correlations <- cor(Training_values[ ,num_cols])
+corrplot(correlations, method="number")
+View(correlations)
+
+# question 8: Looking just at states "1b0d913" and "a952566", what is true?
+Training_values %>% 
+  filter(state %in% c("1b0d913", "a952566")) %>% 
+  group_by(state) %>% 
+ summarize("min" = min(gross_rent, na.rm = T), "max" = max(gross_rent, na.rm = T), "Avg" = mean(gross_rent, na.rm = T), "Median" = median(gross_rent)) %>% 
+  mutate("Range" = max - min)
+
+# question 9: what is the relationship between number of counties in a state and (unweighted) average of gross rent for that state?
+
+Q9 <- Training_values %>% 
+  group_by(state) %>% 
+  summarise("Counties" = n(), "Avg Rent" = mean(gross_rent, na.rm = T)) %>% 
+  arrange(desc(Counties))
+cor(Q9[ ,2:3])
+
+ggplot(Q9) +
+  geom_point(aes(x = Counties, y = `Avg Rent`))
+```
+
+Let's also take a closer look at our categorical variables:
+
+```{r}
+for(col in colnames(Training_values)){
+    if(is.factor(Training_values[, col])){
+        cat('\n')
+        cat(paste('Frequency table for', col))
+        print(table(Training_values[, col]))
+    }    
+}
+
+```
+
+Using scatterplots to examine the relationship between numeric variables and the label (rate spread)
+
+```{r}
+num_cols <- names(Training_values[c(3:16, 20:44)]) #excludes factors, row_id, and gross_rent
+names(Training_values)
+
+plot_scatter = function(df, cols, col_y = 'gross_rent'){
+    options(repr.plot.width=4, repr.plot.height=3.5) # Set the initial plot area dimensions
+    for(col in cols){
+        p = ggplot(df, aes_string(col, col_y)) + 
+                   geom_point() +
+                   ggtitle(paste('Scatter plot of', col_y, 'vs.', col))
+        print(p)
+    }
+}
+
+plot_scatter(Training_values, num_cols)
+
+```
+
+Using Box plots to examine the relationship between categorical variables and the label (rate spread)
+
+```{r, fig.height=8}
+plot_box = function(df, cols, col_y = 'gross_rent'){
+    options(repr.plot.width=4, repr.plot.height=3.5) # Set the initial plot area dimensions
+    for(col in cols){
+        p = ggplot(df, aes_string(col, col_y)) + 
+                   geom_boxplot() +
+                   theme(axis.text.x = element_text(angle = 45)) +
+                   ggtitle(paste('Box plot of', col, 'vs.', col_y))
+        print(p)
+    }
+}
+
+plot_box(Training_values, fac_col)
+
+```
+
+
+```{r} 
+#code with only num cols, with NAs removed
+#also, remove state records with too-few values
+Training_values$state <- as.character(Training_values$state)
+Training_values <- Training_values %>% 
+filter(state !="914c15f" & state !=  "9e065a4")
+Training_values$state <- as.factor(Training_values$state)
+
+table(Training_values$state)
+```
+
+Now, I want to replace missing values with the column average. We will do this for all numerical columns
+
+```{r}
+#replacing NA
+num_cols <- names(Training_values[c(1, 4:16, 20:45)]) #Does include gross_rent and row_id
+#select only the numerical cols
+training <- Training_values #this go around, leaving all variables in training data
+#select(num_cols)
+
+
+training$population[is.na(training$population)] <- round(mean(training$population, na.rm = TRUE))
+training$renter_occupied_households[is.na(training$renter_occupied_households)] <- round(mean(training$renter_occupied_households, na.rm = TRUE))
+training$pct_renter_occupied[is.na(training$pct_renter_occupied)] <- round(mean(training$pct_renter_occupied, na.rm = TRUE))
+training$evictions[is.na(training$evictions)] <- round(mean(training$evictions, na.rm = TRUE))
+training$rent_burden[is.na(training$rent_burden)] <- round(mean(training$rent_burden, na.rm = TRUE))
+training$pct_white[is.na(training$pct_white)] <- round(mean(training$pct_white, na.rm = TRUE))
+training$pct_af_am[is.na(training$pct_af_am)] <- round(mean(training$pct_af_am, na.rm = TRUE))
+training$pct_hispanic[is.na(training$pct_hispanic)] <- round(mean(training$pct_hispanic, na.rm = TRUE))
+training$pct_am_ind[is.na(training$pct_am_ind)] <- round(mean(training$pct_am_ind, na.rm = TRUE))
+training$pct_asian[is.na(training$pct_asian)] <- round(mean(training$pct_asian, na.rm = TRUE))
+training$pct_nh_pi[is.na(training$pct_nh_pi)] <- round(mean(training$pct_nh_pi, na.rm = TRUE))
+training$pct_multiple[is.na(training$pct_multiple)] <- round(mean(training$pct_multiple, na.rm = TRUE))
+training$pct_other[is.na(training$pct_other)] <- round(mean(training$pct_other, na.rm = TRUE))
+training$poverty_rate[is.na(training$poverty_rate)] <- round(mean(training$poverty_rate, na.rm = TRUE))
+training$pct_civilian_labor[is.na(training$pct_civilian_labor)] <- round(mean(training$pct_civilian_labor, na.rm = TRUE))
+training$pct_unemployment[is.na(training$pct_unemployment)] <- round(mean(training$pct_unemployment, na.rm = TRUE))
+training$pct_uninsured_adults[is.na(training$pct_uninsured_adults)] <- round(mean(training$pct_uninsured_adults, na.rm = TRUE))
+training$pct_uninsured_children[is.na(training$pct_uninsured_children)] <- round(mean(training$pct_uninsured_children, na.rm = TRUE))
+training$pct_adult_obesity[is.na(training$pct_adult_obesity)] <- round(mean(training$pct_adult_obesity, na.rm = TRUE))
+training$pct_adult_smoking[is.na(training$pct_adult_smoking)] <- round(mean(training$pct_adult_smoking, na.rm = TRUE))
+training$pct_diabetes[is.na(training$pct_diabetes)] <- round(mean(training$pct_diabetes, na.rm = TRUE))
+training$pct_low_birthweight[is.na(training$pct_low_birthweight)] <- round(mean(training$pct_low_birthweight, na.rm = TRUE))
+training$pct_excessive_drinking[is.na(training$pct_excessive_drinking)] <- round(mean(training$pct_excessive_drinking, na.rm = TRUE))
+training$pct_physical_inactivity[is.na(training$pct_physical_inactivity)] <- round(mean(training$pct_physical_inactivity, na.rm = TRUE))
+training$air_pollution_particulate_matter_value[is.na(training$air_pollution_particulate_matter_value)] <- round(mean(training$air_pollution_particulate_matter_value, na.rm = TRUE))
+training$homicides_per_100k[is.na(training$homicides_per_100k)] <- round(mean(training$homicides_per_100k, na.rm = TRUE))
+training$motor_vehicle_crash_deaths_per_100k[is.na(training$motor_vehicle_crash_deaths_per_100k)] <- round(mean(training$motor_vehicle_crash_deaths_per_100k, na.rm = TRUE))
+training$heart_disease_mortality_per_100k[is.na(training$heart_disease_mortality_per_100k)] <- round(mean(training$heart_disease_mortality_per_100k, na.rm = TRUE))
+training$pop_per_dentist[is.na(training$pop_per_dentist)] <- round(mean(training$pop_per_dentist, na.rm = TRUE))
+training$pop_per_primary_care_physician[is.na(training$pop_per_primary_care_physician)] <- round(mean(training$pop_per_primary_care_physician, na.rm = TRUE))
+training$pct_female[is.na(training$pct_female)] <- round(mean(training$pct_female, na.rm = TRUE))
+training$pct_below_18_years_of_age[is.na(training$pct_below_18_years_of_age)] <- round(mean(training$pct_below_18_years_of_age, na.rm = TRUE))
+training$pct_aged_65_years_and_older[is.na(training$pct_aged_65_years_and_older)] <- round(mean(training$pct_aged_65_years_and_older, na.rm = TRUE))
+training$pct_adults_less_than_a_high_school_diploma[is.na(training$pct_adults_less_than_a_high_school_diploma)] <- round(mean(training$pct_adults_less_than_a_high_school_diploma, na.rm = TRUE))
+training$pct_adults_with_high_school_diploma[is.na(training$pct_adults_with_high_school_diploma)] <- round(mean(training$pct_adults_with_high_school_diploma, na.rm = TRUE))
+training$pct_adults_with_some_college[is.na(training$pct_adults_with_some_college)] <- round(mean(training$pct_adults_with_some_college, na.rm = TRUE))
+training$pct_adults_bachelors_or_higher[is.na(training$pct_adults_bachelors_or_higher)] <- round(mean(training$pct_adults_bachelors_or_higher, na.rm = TRUE))
+training$birth_rate_per_1k[is.na(training$birth_rate_per_1k)] <- round(mean(training$birth_rate_per_1k, na.rm = TRUE))
+training$death_rate_per_1k[is.na(training$death_rate_per_1k)] <- round(mean(training$death_rate_per_1k, na.rm = TRUE))
+
+```
+
+We are going to use linear regression.
+
+Since we have the code that creates a function that has the names of the numeric columns, we can easily scale these columns. This ensures that no variable is overweighted in the regression function just because of it's numerical range.  
+
+First, we must split the dataset to have some training data
+```{r}
+set.seed(1955)
+partition = createDataPartition(training$state, times = 1, p = 0.75, list = F)
+training_num = training[partition, ]
+dim(training_num)
+test_num = training[-partition, ]
+```
+
+-----------------------------------------------------------
+# code with fuller data set
+set.seed(1955)
+partition = createDataPartition(Training_values[, 'state'], times = 1, p = 0.75, list = F)
+training = Training_values[partition, ]
+dim(training)
+test = Training_values[-partition, ]
+#Scaling numerical columns just before we model them
+#apply scaling to training and test data
+preProcValues <- preProcess(training[,num_cols], method = c("center", "scale"))
+
+training[,num_cols] = predict(preProcValues, training[,num_cols])
+test[,num_cols] = predict(preProcValues, test[,num_cols])
+head(training[,num_cols])
+
+#training <- training[complete.cases(training), ]
+#test <- test[complete.cases(test), ]
+
+--------------------------------------------------------------
+
+```{r}
+#Scaling numerical columns just before we model them
+#apply scaling to training_num and test data
+num_cols <- names(Training_values[c(3:16, 20:44)]) #Does NOT include gross_rent, row_id
+names(Training_values)
+#to skip row_id, turn it into a factor!
+training_num$row_id <- as.factor(training_num$row_id)
+
+preProcValues <- preProcess(training_num[ ,num_cols], method = c("center", "scale"))
+
+training_num[,num_cols] = predict(preProcValues, training_num[,num_cols])
+test_num[,num_cols] = predict(preProcValues, test_num[,num_cols])
+head(training_num[,num_cols])
+
+
+```
+
+
+#make sure  factor levels match
+
+test$state <- factor(test$state, levels = levels(Training_values$state))
+training$state <- factor(training$state, levels = levels(Training_values$state))
+table(test$state)
+table(training$state)
+levels(training$state)
+
+#Try it without state!
+
+training <- training %>% 
+    select(-fac_col)
+test <- test %>% 
+    select(-fac_col)
+
+Practice with Hmisc
+library(Hmisc)
+age <- c(1, 2, NA, 4)
+age.i <- impute(age)
+age.i
+summary(age.i)
+class(age.i)
+as.data.frame(age.i)
+
+
+
+```{r}
+#train the model
+start <- Sys.time()
+lin_mod<- lm(gross_rent ~ ., data = training_num[ ,2:45])
+end <- Sys.time() - start
+end
+
+#save lm output
+#lm_save <- capture.output(summary(lin_mod))
+
+#cat("lm_save_12_6", lm_save, file = "lm_save_12_6", sep = "n", append = T)
+
+#see results of lm
+#summary(lin_mod)$coefficients
+#summary(lin_mod)
+
+```
+Using Caret Package
+
+my_lm = train(Training_values[,c(2:7, 9, 11:20, 22)], Training_values[ ,23],
+               method = "lm",
+               preProc = c("center", "scale")
+              )
+message("Linear Regression: Model performance on \n the training set")
+my_lm$results[c("RMSE","Rsquared")] %>%
+        round(2)
+summary(my_lm)
+
+
+```{r}
+
+#examine model results
+qqnorm(lin_mod$resid)
+qqline(lin_mod$resid)
+
+#skimmed <- skim_to_wide(Training_values)
+#View(skimmed)
+```
+Use olsrr package to optimize regression
+
+```{r}
+#ols_step_forward_p(lin_mod)
+#I didn't see any performance improvements here, so I am moving forward with other techniques
+```
+
+
+```{r}
+#Further examine the reults of the lm
+table(training_num$state)
+table(test_num$state)
+print_metrics = function(lin_mod, df, score, label){
+    resids = df[,label] - score
+    resids2 = resids**2
+    N = length(score)
+    r2 = as.character(round(summary(lin_mod)$r.squared, 4))
+    adj_r2 = as.character(round(summary(lin_mod)$adj.r.squared, 4))
+    cat(paste('Mean Square Error      = ', as.character(round(sum(resids2)/N, 4)), '\n'))
+    cat(paste('Root Mean Square Error = ', as.character(round(sqrt(sum(resids2)/N), 4)), '\n'))
+    cat(paste('Mean Absolute Error    = ', as.character(round(sum(abs(resids))/N, 4)), '\n'))
+    cat(paste('Median Absolute Error  = ', as.character(round(median(abs(resids)), 4)), '\n'))
+    cat(paste('R^2                    = ', r2, '\n'))
+    cat(paste('Adjusted R^2           = ', adj_r2, '\n'))
+}
+
+score = predict(lin_mod, newdata = test_num, na.rm = F)
+print_metrics(lin_mod, test_num, score, label = 'gross_rent')
+View(score)
+
+
+#we saw that the test values dataset has one new level for state (only 1 observations). We are replacing that state with another
+#filter(Test_values, state == "a0e0eec")
+#Test_values[1464, 2] <- "08f8fb4" 
+
+#install.packages("Hmisc")
+#library(Hmisc)
+```
+
+
+
+Time to predict the test data provided to us!
+```{r}
+#First, fill in NAs, and center/scale
+#replacing NA
+num_cols <- names(Test_values[c(1, 3:16, 20:44)]) #Does include row_id
+
+#select only the numerical cols
+Test_Values_predict_num <- Test_values 
+
+
+Test_Values_predict_num$population[is.na(Test_Values_predict_num$population)] <- round(mean(Test_Values_predict_num$population, na.rm = TRUE))
+Test_Values_predict_num$renter_occupied_households[is.na(Test_Values_predict_num$renter_occupied_households)] <- round(mean(Test_Values_predict_num$renter_occupied_households, na.rm = TRUE))
+Test_Values_predict_num$pct_renter_occupied[is.na(Test_Values_predict_num$pct_renter_occupied)] <- round(mean(Test_Values_predict_num$pct_renter_occupied, na.rm = TRUE))
+Test_Values_predict_num$evictions[is.na(Test_Values_predict_num$evictions)] <- round(mean(Test_Values_predict_num$evictions, na.rm = TRUE))
+Test_Values_predict_num$rent_burden[is.na(Test_Values_predict_num$rent_burden)] <- round(mean(Test_Values_predict_num$rent_burden, na.rm = TRUE))
+Test_Values_predict_num$pct_white[is.na(Test_Values_predict_num$pct_white)] <- round(mean(Test_Values_predict_num$pct_white, na.rm = TRUE))
+Test_Values_predict_num$pct_af_am[is.na(Test_Values_predict_num$pct_af_am)] <- round(mean(Test_Values_predict_num$pct_af_am, na.rm = TRUE))
+Test_Values_predict_num$pct_hispanic[is.na(Test_Values_predict_num$pct_hispanic)] <- round(mean(Test_Values_predict_num$pct_hispanic, na.rm = TRUE))
+Test_Values_predict_num$pct_am_ind[is.na(Test_Values_predict_num$pct_am_ind)] <- round(mean(Test_Values_predict_num$pct_am_ind, na.rm = TRUE))
+Test_Values_predict_num$pct_asian[is.na(Test_Values_predict_num$pct_asian)] <- round(mean(Test_Values_predict_num$pct_asian, na.rm = TRUE))
+Test_Values_predict_num$pct_nh_pi[is.na(Test_Values_predict_num$pct_nh_pi)] <- round(mean(Test_Values_predict_num$pct_nh_pi, na.rm = TRUE))
+Test_Values_predict_num$pct_multiple[is.na(Test_Values_predict_num$pct_multiple)] <- round(mean(Test_Values_predict_num$pct_multiple, na.rm = TRUE))
+Test_Values_predict_num$pct_other[is.na(Test_Values_predict_num$pct_other)] <- round(mean(Test_Values_predict_num$pct_other, na.rm = TRUE))
+Test_Values_predict_num$poverty_rate[is.na(Test_Values_predict_num$poverty_rate)] <- round(mean(Test_Values_predict_num$poverty_rate, na.rm = TRUE))
+Test_Values_predict_num$pct_civilian_labor[is.na(Test_Values_predict_num$pct_civilian_labor)] <- round(mean(Test_Values_predict_num$pct_civilian_labor, na.rm = TRUE))
+Test_Values_predict_num$pct_unemployment[is.na(Test_Values_predict_num$pct_unemployment)] <- round(mean(Test_Values_predict_num$pct_unemployment, na.rm = TRUE))
+Test_Values_predict_num$pct_uninsured_adults[is.na(Test_Values_predict_num$pct_uninsured_adults)] <- round(mean(Test_Values_predict_num$pct_uninsured_adults, na.rm = TRUE))
+Test_Values_predict_num$pct_uninsured_children[is.na(Test_Values_predict_num$pct_uninsured_children)] <- round(mean(Test_Values_predict_num$pct_uninsured_children, na.rm = TRUE))
+Test_Values_predict_num$pct_adult_obesity[is.na(Test_Values_predict_num$pct_adult_obesity)] <- round(mean(Test_Values_predict_num$pct_adult_obesity, na.rm = TRUE))
+Test_Values_predict_num$pct_adult_smoking[is.na(Test_Values_predict_num$pct_adult_smoking)] <- round(mean(Test_Values_predict_num$pct_adult_smoking, na.rm = TRUE))
+Test_Values_predict_num$pct_diabetes[is.na(Test_Values_predict_num$pct_diabetes)] <- round(mean(Test_Values_predict_num$pct_diabetes, na.rm = TRUE))
+Test_Values_predict_num$pct_low_birthweight[is.na(Test_Values_predict_num$pct_low_birthweight)] <- round(mean(Test_Values_predict_num$pct_low_birthweight, na.rm = TRUE))
+Test_Values_predict_num$pct_excessive_drinking[is.na(Test_Values_predict_num$pct_excessive_drinking)] <- round(mean(Test_Values_predict_num$pct_excessive_drinking, na.rm = TRUE))
+Test_Values_predict_num$pct_physical_inactivity[is.na(Test_Values_predict_num$pct_physical_inactivity)] <- round(mean(Test_Values_predict_num$pct_physical_inactivity, na.rm = TRUE))
+Test_Values_predict_num$air_pollution_particulate_matter_value[is.na(Test_Values_predict_num$air_pollution_particulate_matter_value)] <- round(mean(Test_Values_predict_num$air_pollution_particulate_matter_value, na.rm = TRUE))
+Test_Values_predict_num$homicides_per_100k[is.na(Test_Values_predict_num$homicides_per_100k)] <- round(mean(Test_Values_predict_num$homicides_per_100k, na.rm = TRUE))
+Test_Values_predict_num$motor_vehicle_crash_deaths_per_100k[is.na(Test_Values_predict_num$motor_vehicle_crash_deaths_per_100k)] <- round(mean(Test_Values_predict_num$motor_vehicle_crash_deaths_per_100k, na.rm = TRUE))
+Test_Values_predict_num$heart_disease_mortality_per_100k[is.na(Test_Values_predict_num$heart_disease_mortality_per_100k)] <- round(mean(Test_Values_predict_num$heart_disease_mortality_per_100k, na.rm = TRUE))
+Test_Values_predict_num$pop_per_dentist[is.na(Test_Values_predict_num$pop_per_dentist)] <- round(mean(Test_Values_predict_num$pop_per_dentist, na.rm = TRUE))
+Test_Values_predict_num$pop_per_primary_care_physician[is.na(Test_Values_predict_num$pop_per_primary_care_physician)] <- round(mean(Test_Values_predict_num$pop_per_primary_care_physician, na.rm = TRUE))
+Test_Values_predict_num$pct_female[is.na(Test_Values_predict_num$pct_female)] <- round(mean(Test_Values_predict_num$pct_female, na.rm = TRUE))
+Test_Values_predict_num$pct_below_18_years_of_age[is.na(Test_Values_predict_num$pct_below_18_years_of_age)] <- round(mean(Test_Values_predict_num$pct_below_18_years_of_age, na.rm = TRUE))
+Test_Values_predict_num$pct_aged_65_years_and_older[is.na(Test_Values_predict_num$pct_aged_65_years_and_older)] <- round(mean(Test_Values_predict_num$pct_aged_65_years_and_older, na.rm = TRUE))
+Test_Values_predict_num$pct_adults_less_than_a_high_school_diploma[is.na(Test_Values_predict_num$pct_adults_less_than_a_high_school_diploma)] <- round(mean(Test_Values_predict_num$pct_adults_less_than_a_high_school_diploma, na.rm = TRUE))
+Test_Values_predict_num$pct_adults_with_high_school_diploma[is.na(Test_Values_predict_num$pct_adults_with_high_school_diploma)] <- round(mean(Test_Values_predict_num$pct_adults_with_high_school_diploma, na.rm = TRUE))
+Test_Values_predict_num$pct_adults_with_some_college[is.na(Test_Values_predict_num$pct_adults_with_some_college)] <- round(mean(Test_Values_predict_num$pct_adults_with_some_college, na.rm = TRUE))
+Test_Values_predict_num$pct_adults_bachelors_or_higher[is.na(Test_Values_predict_num$pct_adults_bachelors_or_higher)] <- round(mean(Test_Values_predict_num$pct_adults_bachelors_or_higher, na.rm = TRUE))
+Test_Values_predict_num$birth_rate_per_1k[is.na(Test_Values_predict_num$birth_rate_per_1k)] <- round(mean(Test_Values_predict_num$birth_rate_per_1k, na.rm = TRUE))
+Test_Values_predict_num$death_rate_per_1k[is.na(Test_Values_predict_num$death_rate_per_1k)] <- round(mean(Test_Values_predict_num$death_rate_per_1k, na.rm = TRUE))
+
+#Then, center and scale the variables
+#to skip row_id, turn it into a factor!
+Test_Values_predict_num$row_id <- as.factor(Test_Values_predict_num$row_id)
+
+preProcValues <- preProcess(Test_Values_predict_num[ ,num_cols], method = c("center", "scale"))
+
+Test_Values_predict_num[,num_cols] = predict(preProcValues, Test_Values_predict_num[,num_cols])
+head(Test_Values_predict_num[,num_cols])
+
+
+#Drop the new, unique factor levels of state
+#also, remove state records with too-few values
+Test_Values_predict_num$state <- as.character(Test_Values_predict_num$state)
+Test_Values_predict_num <- Test_Values_predict_num %>% 
+filter(state !="914c15f" & state !=  "9e065a4" & state != "a0e0eec")
+Test_Values_predict_num$state <- as.factor(Test_Values_predict_num$state)
+
+table(Test_Values_predict_num$state)
+
+
+
+test_predicted = predict(lin_mod, newdata = Test_Values_predict_num, na.rm = FALSE)
+View(test_predicted)
+test_predicted <- as_tibble(test_predicted)
+test_predicted$row_id <- seq(0, 1569, 1)
+test_predicted <- test_predicted %>% 
+  mutate("gross_rent" = round(test_predicted$value, 0)) %>% 
+  select(row_id, gross_rent)
+write.csv(test_predicted, file = "S_Cone_prediction_12_18_2019_second.csv")
+
+#print_metrics(lin_mod, Test_values, test_predicted, label = 'gross_rent') #Test_values has no label...
+
+
+```
+
+
+# Conclusion
+In this R markdown document, we took the files provided to us for this challenge, and performed exploratory data analysis, to get a sense of the data. We then fixed a few underlying issues with the data. Then, we built and optimized a linear regression model to predict gross rent given the ~40 predictors. We achieved a R^2 value greater than 0.8!
